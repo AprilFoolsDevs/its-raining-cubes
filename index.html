@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>Oimo.js Collision</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<meta http-equiv="X-UA-Compatible" content="IE=11" />
+		<link rel="shortcut icon" href="assets/favicon.ico">
+		<link rel="stylesheet" href="lib/demo.css">
+
+		<script src="lib/three.min.js"></script>
+		<script src="lib/OrbitControls.js"></script>
+		<script src="lib/oimo.min.js"></script>
+
+	</head>
+	<body>
+		<canvas id="canvas"></canvas>
+		<div id='interface'>
+			<input type="number" name="quantity" min="10" max="2000" value="40"  id='MaxNumber'>
+			<input type="submit" onClick=populate()>
+			<input type="number" name="gravity" min="-20" max="20" value="-10" id='gravity' onChange=gravity() >
+		</div>
+			<div id='info'></div>
+		<script>
+var isMobile = false;
+var antialias = true;
+
+// three var
+var camera, scene, light, renderer, canvas;
+var meshes = [];
+var grounds = [];
+var matGround, matGroundTrans;
+var buffgeoBox;
+var ToRad = 0.0174532925199432957;
+
+//oimo var
+var world = null;
+var collisionGroupes = {};
+var bodies = [];
+var infos;
+var type=1;
+var colorMaterials = [];
+
+init();
+loop();
+
+function init() {
+
+	var n = navigator.userAgent;
+	if (n.match(/Android/i) || n.match(/webOS/i) || n.match(/iPhone/i) || n.match(/iPad/i) || n.match(/iPod/i) || n.match(/BlackBerry/i) || n.match(/Windows Phone/i)){ isMobile = true;  antialias = false; document.getElementById("MaxNumber").value = 200; }
+
+	infos = document.getElementById("info");
+
+	canvas = document.getElementById("canvas");
+
+	camera = new THREE.PerspectiveCamera( 70, window.innerWidth / window.innerHeight, 1, 10000 );
+	camera.position.set( 0, 160, 400 );
+
+	controls = new THREE.OrbitControls( camera, canvas );
+	controls.target.set(0, 20, 0);
+	controls.update();
+
+	scene = new THREE.Scene();
+
+	renderer = new THREE.WebGLRenderer({ canvas:canvas, precision: "mediump", antialias:antialias });
+	renderer.setSize( window.innerWidth, window.innerHeight );
+
+	var materialType = 'MeshBasicMaterial';
+
+	if(!isMobile){
+
+		scene.add( new THREE.AmbientLight( 0x3D4143 ) );
+
+		light = new THREE.DirectionalLight( 0xffffff , 1);
+		light.position.set( 300, 1000, 500 );
+		light.target.position.set( 0, 0, 0 );
+		light.castShadow = true;
+		var d = 300;
+		light.shadow.camera = new THREE.OrthographicCamera( -d, d, d, -d,  500, 1600 );
+		light.shadow.bias = 0.0001;
+		light.shadow.mapSize.width = light.shadow.mapSize.height = 1024;
+		scene.add( light );
+
+		materialType = 'MeshPhongMaterial';
+
+		renderer.shadowMap.enabled = true;
+		renderer.shadowMap.type = THREE.PCFShadowMap;//THREE.BasicShadowMap;
+	}
+
+	// background
+	var buffgeoBack = new THREE.BufferGeometry();
+	buffgeoBack.fromGeometry( new THREE.IcosahedronGeometry(8000,1) );
+	var back = new THREE.Mesh( buffgeoBack, new THREE.MeshBasicMaterial( { map:gradTexture([[1,0.75,0.5,0.25], ['#1B1D1E','#3D4143','#72797D', '#b0babf']]), side:THREE.BackSide, depthWrite: false }  ));
+	back.geometry.applyMatrix(new THREE.Matrix4().makeRotationZ(15*ToRad));
+	scene.add( back );
+
+	buffgeoBox = new THREE.BufferGeometry();
+	buffgeoBox.fromGeometry( new THREE.BoxGeometry( 1, 1, 1 ) );
+
+	matBox = new THREE[materialType]( { color: 0x336601, name:'sph' } );
+
+	
+	colorMaterials = [0xFFFFFF, 0xE4E4E4, 0x888888, 0x222222, 0xFFA7D1, 0xE50000, 0xE59500, 0xA06A42, 0xE5D900, 0x94E044, 0x02BE01, 0x00D3DD, 0x0083C7, 0x0000EA, 0xCF6EE4, 0x820080]
+		.map(function (c) { new THREE[materialType]( { color: c } ) })
+	matGround = new THREE[materialType]( { color: 0x3D4143, transparent:true, opacity:0.8 } );
+	matGroundTrans = new THREE[materialType]( { color: 0x3D4143, transparent:true, opacity:0.8 } );
+
+	// events
+
+	window.addEventListener( 'resize', onWindowResize, false );
+
+	world = new OIMO.World( {info:true, worldscale:100} );
+
+	// ground
+
+	var ground = world.add({size:[1000, 40, 1000], pos:[0,-20,0], config:[ 1, 0.4, 0.2, 1, 1 ]});
+	addStaticBox([1000, 40, 1000], [0,-20,0], [0,0,0]);
+
+	
+	// Websockets
+	var sock = new WebSocket( "wss://ws-0a5f32bbc2bad0dbb.wss.redditmedia.com/place?m=AQAAIiXiWIFCHPXJ84XzQQrR9TbqISJOnNwzo0ewOavhoAZ9O_j5");
+
+	sock.addEventListener("close", function() {
+		alert("Websocket closed, please refresh!\n(contact /u/JJJollyjim if there's a persistent issue)");
+	})
+
+	sock.addEventListener("error", function() {
+		alert("Websocket error, please refresh!\n(contact /u/JJJollyjim if there's a persistent issue)");
+	});
+
+	sock.addEventListener("message", function(msg) {
+		var data = JSON.parse(msg.data);
+		if (data.type === "place") {
+			addBox(data.payload.color, data.payload.x - 500, data.payload.y - 500)
+		}
+	})
+}
+
+function loop() {
+
+	updateOimoPhysics();
+	renderer.render( scene, camera );
+	requestAnimationFrame( loop );
+
+}
+
+function onWindowResize() {
+
+	camera.aspect = window.innerWidth / window.innerHeight;
+	camera.updateProjectionMatrix();
+	renderer.setSize( window.innerWidth, window.innerHeight );
+
+}
+
+function addStaticBox(size, position, rotation, spec) {
+	var mesh;
+	if(spec) mesh = new THREE.Mesh( buffgeoBox, matGroundTrans );
+	else mesh = new THREE.Mesh( buffgeoBox, matGround );
+	mesh.scale.set( size[0], size[1], size[2] );
+	mesh.position.set( position[0], position[1], position[2] );
+	mesh.rotation.set( rotation[0]*ToRad, rotation[1]*ToRad, rotation[2]*ToRad );
+	scene.add( mesh );
+	grounds.push(mesh);
+	mesh.castShadow = true;
+	mesh.receiveShadow = true;
+}
+
+function clearMesh(){
+	var i=meshes.length;
+	while (i--) scene.remove(meshes[ i ]);
+	i = grounds.length;
+	while (i--) scene.remove(grounds[ i ]);
+	grounds = [];
+	meshes = [];
+}
+
+//----------------------------------
+//  OIMO PHYSICS
+//----------------------------------
+
+function initOimoPhysics(){
+
+}
+
+function addBox(type, x, z) {
+	var y = 500 + Math.random() * 50;
+	var scale = 20;
+
+	bodies.push(world.add({type:'box', size:[scale,scale,scale], pos:[x,y,z], move:true, config: [ 1, 0.4, 0.2, 1, 1 ] }));
+
+	var mesh = new THREE.Mesh( buffgeoBox, colorMaterials[type] );
+	mesh.scale.set( scale,scale,scale );
+	mesh.castShadow = true;
+	mesh.receiveShadow = true;
+
+	meshes.push(mesh);
+
+	scene.add( mesh );
+}
+
+
+
+function updateOimoPhysics() {
+
+	if(world == null) return;
+
+	world.step();
+
+	var p, r, m, x, y, z;
+	var mtx = new THREE.Matrix4();
+	var i = bodies.length;
+	var mesh;
+	var body;
+
+	var toDelete = [];
+
+	while (i--){
+		body = bodies[i];
+		mesh = meshes[i];
+
+		if(!body.sleeping){
+
+			mesh.position.copy(body.getPosition());
+			mesh.quaternion.copy(body.getQuaternion());
+
+			if(mesh.position.y<-50){
+				world.removeRigidBody(bodies[i])
+				scene.remove(meshes[i])
+
+				toDelete.push(i);
+			}
+		}
+	}
+	
+	for (var i = 0; i < toDelete.length; i++) {
+		meshes.splice(i, 1)
+		bodies.splice(i, 1)
+
+	}
+
+	infos.innerHTML = world.getInfo();
+}
+
+function gravity(g){
+	nG = document.getElementById("gravity").value
+	world.gravity = new OIMO.Vec3(0, nG, 0);
+}
+
+//----------------------------------
+//  TEXTURES
+//----------------------------------
+
+function gradTexture(color) {
+	var c = document.createElement("canvas");
+	var ct = c.getContext("2d");
+	c.width = 16; c.height = 256;
+	var gradient = ct.createLinearGradient(0,0,0,256);
+	var i = color[0].length;
+	while(i--){ gradient.addColorStop(color[0][i],color[1][i]); }
+	ct.fillStyle = gradient;
+	ct.fillRect(0,0,16,256);
+	var texture = new THREE.Texture(c);
+	texture.needsUpdate = true;
+	return texture;
+}
+
+		</script>
+	</body>
+</html>
